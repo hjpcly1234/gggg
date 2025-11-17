@@ -33,7 +33,7 @@ jobs:
       run: |
         git config --global user.name "github-actions"
         git config --global user.email "github-actions[bot]@users.noreply.github.com"
-        git add test/output/detail_result.json  # 将文件添加到 Git 跟踪
+        git add test/detail_result.json  # 将文件添加到 Git 跟踪
         git commit -m "Update detail_result.json" || echo "No changes to commit"
         git push
 
@@ -41,4 +41,4 @@ jobs:
       uses: actions/upload-artifact@v4
       with:
         name: script-results
-        path: test/output/detail_result.json  # 上传抓取的 JSON 结果文件
+        path: test/detail_result.json  # 上传抓取的 JSON 结果文件
