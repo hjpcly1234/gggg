@@ -1,114 +1,126 @@
+# crawler.py  —— 专为 GitHub Actions 优化版（type_id=63）
+import json
+import random
+import re
+from pathlib import Path
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import requests
 from bs4 import BeautifulSoup
-import re
-import json
-from pathlib import Path
-from time import sleep
+from urllib3.util import Retry
+from requests.adapters import HTTPAdapter
 
-# ====== 配置 ======
+# ==================== 配置 ====================
 base_url = "https://sex8zy.com"
-type_id = 63  # 分类 ID
-start_page = 1  # 起始页
-end_page = 2  # 结束页（包含）
-output_dir = Path("test/output")  # 输出目录（在 test 文件夹内）
+type_id = 63
+start_page = 1
+end_page = 2                     # 你现在只跑2页，后面想跑更多直接改数字
+output_dir = Path("test/output")
 list_path = output_dir / "result.json"
 detail_path = output_dir / "detail_result.json"
 
-headers = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
-}
+MAX_WORKERS = 15                 # GitHub Actions 最佳值（别超过20）
+TIMEOUT = 20
 
-# ====== 创建目录 ======
+# 随机UA池
+UA_LIST = [
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/131.0 Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 Chrome/131.0 Safari/537.36",
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/131.0 Safari/537.36",
+]
+
+# 创建带重试的 Session
+session = requests.Session()
+retry = Retry(total=3, backoff_factor=1.5, status_forcelist=[429, 500, 502, 503, 504])
+adapter = HTTPAdapter(pool_connections=50, pool_maxsize=MAX_WORKERS*2, max_retries=retry)
+session.mount("http://", adapter)
+session.mount("https://", adapter)
+
 output_dir.mkdir(parents=True, exist_ok=True)
 
-# ====== 工具函数 ======
-def sanitize_filename(filename):
-    """删除文件名中的非法字符，并限制文件名长度"""
-    # 删除非法字符
-    filename = re.sub(r'[<>:"/\\|?*]', '_', filename)
-    # 限制文件名最大长度
-    MAX_PATH_LENGTH = 200  # 可以根据需要调整长度限制
-    if len(filename) > MAX_PATH_LENGTH:
-        filename = filename[:MAX_PATH_LENGTH]  # 截取文件夹名称的前 200 个字符
-    return filename
-
-# ====== 第一步：抓取或加载列表页 ======
+# ==================== 第一步：并发抓列表 ====================
 if list_path.exists():
-    print(f"🍀 本地存在 {list_path}，直接读取...")
+    print("检测到已有 result.json，直接加载...")
     video_list = json.load(open(list_path, "r", encoding="utf-8"))
 else:
-    print(f"🔎 本地未找到 {list_path}，开始抓取列表页...\n")
+    print(f"开始并发抓取第 {start_page}-{end_page} 页列表...")
     video_list = []
-    for page in range(start_page, end_page + 1):
-        page_url = f"{base_url}/index.php/vod/type/id/{type_id}/page/{page}.html"
-        print(f"  📄 正在抓取列表页（{page}/{end_page}）：{page_url}")
 
+    def fetch_list_page(page):
+        url = f"{base_url}/index.php/vod/type/id/{type_id}/page/{page}.html"
+        headers = {"User-Agent": random.choice(UA_LIST)}
         try:
-            response = requests.get(page_url, headers=headers, timeout=10)
-            response.encoding = response.apparent_encoding
-            soup = BeautifulSoup(response.text, "html.parser")
-
-            items = soup.find_all("a", class_="row", href=True)
-            print(f"     当前页找到 {len(items)} 条记录")
-            for i, a_tag in enumerate(items):
-                href = a_tag["href"]
+            r = session.get(url, headers=headers, timeout=TIMEOUT)
+            r.raise_for_status()
+            r.encoding = r.apparent_encoding
+            soup = BeautifulSoup(r.text, "html.parser")
+            items = []
+            for a in soup.find_all("a", class_="row", href=True):
+                href = a["href"]
                 if re.match(r"/index.php/vod/detail/id/\d+\.html", href):
-                    li_tag = a_tag.find("li", style=re.compile("text-align: ?left"))
-                    if li_tag:
-                        title = li_tag.get_text(strip=True)
-                        full_url = base_url + href
-                        video_list.append({"title": title, "url": full_url})
-            sleep(1)
+                    li = a.find("li", style=re.compile("text-align: ?left"))
+                    if li:
+                        title = li.get_text(strip=True)
+                        items.append({"title": title, "url": base_url + href})
+            print(f"第 {page} 页 → {len(items)} 条")
+            return items
         except Exception as e:
-            print(f"❌ 列表页抓取失败：{page_url}，错误：{e}")
+            print(f"第 {page} 页失败：{e}")
+            return []
 
-    # 保存结果
+    with ThreadPoolExecutor(max_workers=10) as executor:
+        for items in executor.map(fetch_list_page, range(start_page, end_page + 1)):
+            video_list.extend(items)
+            sleep(random.uniform(0.5, 1.2))
+
     with open(list_path, "w", encoding="utf-8") as f:
         json.dump(video_list, f, ensure_ascii=False, indent=2)
+    print(f"列表完成！共 {len(video_list)} 条\n")
 
-    print(f"\n📋 列表抓取完成！共 {len(video_list)} 条，已保存到 {list_path}\n")
-
-# ====== 第二步：抓取详情页 ======
-print("🎬 开始抓取详情页内容...\n")
-all_details = []
-total_items = len(video_list)
-
-for idx, item in enumerate(video_list, start=1):
+# ==================== 第二步：并发抓详情 ====================
+def fetch_detail(task):
+    idx, total, item = task
     url = item["url"]
-    print(f"  🔍 抓取详情（{idx}/{total_items}）：{url}")
-
+    headers = {"User-Agent": random.choice(UA_LIST)}
     try:
-        resp = requests.get(url, headers=headers, timeout=10)
-        resp.encoding = resp.apparent_encoding
-        soup = BeautifulSoup(resp.text, "html.parser")
+        r = session.get(url, headers=headers, timeout=TIMEOUT)
+        r.raise_for_status()
+        r.encoding = r.apparent_encoding
+        soup = BeautifulSoup(r.text, "html.parser")
 
-        # 封面图片
-        img_tag = soup.find("img", id="detail-img")
-        image_url = img_tag["src"] if img_tag else None
+        img = soup.find("img", id="detail-img")["src"] if soup.find("img", id="detail-img") else None
+        title = soup.find("h1", class_="limit").get_text(strip=True) if soup.find("h1", class_="limit") else item["title"]
+        m3u8_input = soup.find("input", id="playId1")
+        m3u8 = (m3u8_input["value"].split("$")[-1] if m3u8_input and "$" in m3u8_input["value"] else 
+                m3u8_input["value"] if m3u8_input else "")
 
-        # 标题（覆盖主标题）
-        title_tag = soup.find("h1", class_="limit")
-        title = title_tag.get_text(strip=True) if title_tag else item["title"]
-
-        # m3u8 地址
-        input_tag = soup.find("input", {"id": "playId1"})
-        m3u8_full = input_tag["value"] if input_tag else ""
-        m3u8_url = m3u8_full.split("$")[-1] if "$" in m3u8_full else m3u8_full
-
-        all_details.append({
+        return {
             "title": title,
             "url": url,
-            "image": image_url,
-            "m3u8": m3u8_url
-        })
-
-        sleep(1)
-
+            "image": img,
+            "m3u8": m3u8.strip()
+        }
     except Exception as e:
-        print(f"❌ 抓取失败：{url}，错误：{e}")
+        return {"title": "【失败】" + item["title"], "url": url, "image": None, "m3u8": "", "error": str(e)}
 
-# 保存详情结果
-with open(detail_path, "w", encoding="utf-8") as f:
-    json.dump(all_details, f, ensure_ascii=False, indent=2)
+# 如果已有完整详情且数量一致就跳过
+if detail_path.exists() and len(json.load(open(detail_path))) >= len(video_list):
+    print("detail_result.json 已存在且完整，直接结束")
+else:
+    print(f"开始并发抓取 {len(video_list)} 条详情（线程数：{MAX_WORKERS}）...")
+    tasks = [(i+1, len(video_list), item) for i, item in enumerate(video_list)]
+    results = []
 
-print(f"\n✨ 完成！共抓取 {len(all_details)} 条详情内容，已保存到 {detail_path}")
+    with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
+        for future in as_completed({executor.submit(fetch_detail, t): t[0] for t in tasks}.keys()):
+            result = future.result()
+            results.append(result)
+            status = "成功" if "error" not in result else "失败"
+            print(f"[{result['url'].split('/')[-1]:>15}] {status} {result['title'][:40]}")
+
+    # 保持原始顺序
+    results = sorted(results, key=lambda x: video_list.index(next(i for i in video_list if i["url"] == x["url"])))
+
+    with open(detail_path, "w", encoding="utf-8") as f:
+        json.dump(results, f, ensure_ascii=False, indent=2)
+
+print(f"\n全部完成！结果保存在：{detail_path}")
