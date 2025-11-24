@@ -12,12 +12,12 @@ from time import sleep
 
 # ==================== 配置 ====================
 base_url = "https://sex8zy.com"
-type_id = 65
+type_id = 55
 start_page = 1
-end_page = 120
+end_page = 121
 output_dir = Path("test/output")
-list_path = output_dir / "result3.json"
-detail_path = output_dir / "detail_result3.json"
+list_path = output_dir / "result4.json"
+detail_path = output_dir / "detail_result4.json"
 
 MAX_WORKERS = 15
 TIMEOUT = 20
