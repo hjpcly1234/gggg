@@ -3,8 +3,6 @@ name: 抓取 sex8zy
 
 on:
   workflow_dispatch:      # 手动触发
-  schedule:
-    - cron: '0 */12 * * *'  # 可选：每12小时自动更新一次
 
 permissions:
   contents: write   # 必须加这行，不然无法 push
